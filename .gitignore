@@ -1,0 +1,5 @@
+node_modules
+*outfile
+.aws-sam
+*samconfig*
+package-lock.json

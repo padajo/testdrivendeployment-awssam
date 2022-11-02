@@ -1,0 +1,166 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  poc-td-deployment-test-stack
+
+  This is a test stack for trying out the proof of concept test driven
+  deplopyment stack in test-template.yaml. 
+
+Transform:
+- AWS::Serverless-2016-10-31
+
+Globals:
+  Function:
+    Runtime: "nodejs16.x"
+    # tends to be a better architecture
+    Architectures:
+      - arm64
+    # This is to minimise the function timeout as much as possible for each function
+    Timeout: 2
+    MemorySize: 128
+
+Resources:
+
+  # this SQS Queue is the ingestion point for this Serverless application
+  ZeroQueue:
+    Type: AWS::SQS::Queue
+
+  OneLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/one.handler
+      Description: First function in the process
+      Policies:
+        # this function can read from the SQS Queue "ZeroQueue"
+        - SQSPollerPolicy:
+            QueueName: 
+              Fn::GetAtt: [ "ZeroQueue", "QueueName" ]
+
+        # this function can send to the SQS Queue "OneQueue"
+        - SQSSendMessagePolicy:
+            QueueName: 
+              Fn::GetAtt: [ "OneQueue", "QueueName" ]
+      Environment:
+        Variables:
+          ONE_QUEUE_URL: 
+            Fn::GetAtt: [ "OneQueue", "QueueUrl" ]
+      # Trigger this Lambda function based on messages coming into the Zero queue
+      Events: 
+        ZeroQueueSQSEvent:
+          Type: SQS
+          Properties:
+            Queue: 
+              Fn::GetAtt: [ "ZeroQueue", "Arn" ]
+            BatchSize: 1 # this is simply done for testing purposes
+
+  OneQueue:
+    Type: AWS::SQS::Queue
+
+  TwoLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/two.handler
+      Description: Second function in the process
+      Policies:
+        # this function can read from the SQS Queue "OneQueue"
+        - SQSPollerPolicy:
+            QueueName: 
+              Fn::GetAtt: [ "OneQueue", "QueueName" ]
+        # this function can write to the DynamoDB Table "TwoTable"
+        - DynamoDBWritePolicy:
+            TableName: 
+              Ref: TwoTable
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: 
+            Ref: TwoTable
+          DYNAMODB_TABLE_ARN:
+            Fn::GetAtt: [ "TwoTable", "Arn" ]
+      # Trigger this Lambda function based on new objects in the One SQS Queue
+      Events: 
+        OneQueueSQSEvent:
+          Type: SQS
+          Properties:
+            Queue: 
+              Fn::GetAtt: [ "OneQueue", "Arn" ]
+            BatchSize: 1 # this is simply done for testing purposes
+
+  # This will create a basic DynamoDB table with a string primary key of id.
+  # Have to use AWS::DynamoDB::Table and not AWS::Serverless::SimpleTable because of DynamoDB Streams.
+  TwoTable:
+    Type: AWS::DynamoDB::Table 
+    Properties:
+      BillingMode: "PROVISIONED" # this is a test table, so set it to the lowest
+      ProvisionedThroughput: 
+        ReadCapacityUnits: "1"
+        WriteCapacityUnits: "1"
+      StreamSpecification: 
+        StreamViewType: "NEW_AND_OLD_IMAGES" # this is required for DynamoDB Streams to work
+      # define the primary key
+      AttributeDefinitions:
+        -
+          AttributeName: "Id"
+          AttributeType: "S"
+      KeySchema: 
+        - 
+          AttributeName: "Id"
+          KeyType: "HASH"
+
+  ThreeLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/three.handler
+      Description: Third function in the process
+      Policies:
+        - AWSLambdaBasicExecutionRole
+      Events:
+        TwoTableDynamoDBEvent:
+          Type: DynamoDB
+          Properties:
+            Stream: 
+              Fn::GetAtt: [ "TwoTable", "StreamArn" ]
+            StartingPosition: TRIM_HORIZON
+            BatchSize: 1 # this is simply done for testing purposes
+            Enabled: true
+
+Outputs:
+  ZeroQueueUrl: 
+    Description: "URL of Zero SQS queue"
+    Value: !GetAtt ZeroQueue.QueueUrl
+  OneFn:
+    Description: "Logical ID of lambda one function"
+    Value: 
+      Ref: "OneLambdaFunction"
+  OneArn:
+    Description: "ARN of lambda one function"
+    Value: !GetAtt OneLambdaFunction.Arn
+  OneQueueUrl: 
+    Description: "URL of One SQS queue"
+    Value: !GetAtt OneQueue.QueueUrl
+  TwoArn:
+    Description: "Logical ID of lambda two function"
+    Value: 
+      Ref: "TwoLambdaFunction"
+  TwoFn:
+    Description: "ARN of lambda two function"
+    Value: !GetAtt TwoLambdaFunction.Arn
+  TwoTableName:
+    Description: "Table Name of DynamoDB two table"
+    Value:
+      Ref: "TwoTable"
+  TwoTableArn:
+    Description: "ARN of DynamoDB two table"
+    Value: !GetAtt TwoTable.Arn
+  TwoTableStreamArn:
+    Description: "Stream ARN of DynamoDB two table"
+    Value: !GetAtt TwoTable.StreamArn
+  ThreeArn:
+    Description: "Logical ID of lambda three function"
+    Value: 
+      Ref: "ThreeLambdaFunction"
+  ThreeFn:
+    Description: "ARN of lambda three function"
+    Value: !GetAtt ThreeLambdaFunction.Arn
+  
+  ChangeThis:
+    Description: "Simple way of updating the template without making any other changes to see if the test triggers"
+    Value: 3

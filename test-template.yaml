@@ -1,0 +1,113 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  poc-td-deployment
+
+  This describes a test begin and end, but could describe any number of test
+  Lambda functions that test deployed infrastructure and could be called in any kind 
+  of sequence
+
+Transform:
+- AWS::Serverless-2016-10-31
+
+Parameters:
+  StackToTestARN:
+    Type: String
+    Description: The full ARN of the CloudFormation stack that this stack is created to test. The stack must be deployed in the same region as this stack is deployed into.
+    MinLength: 1
+
+Globals:
+  Function:
+    Runtime: nodejs16.x
+    # tends to be a better architecture
+    Architectures:
+      - arm64
+    # This is to minimise the function timeout as much as possible for each function
+    Timeout: 1 
+    MemorySize: 128
+    # this puts the Stack ARN that we're testing into each function as an environment variable
+    Environment:
+      Variables:
+        STACK_TO_TEST_ARN: !Ref StackToTestARN
+
+Resources:
+  TestBeginLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/test-handlers/test-begin.testHandler
+      Description: The test begin deployment handler
+      Timeout: 20
+      # change as applicable for each test. This is simply to ensure that each function has least privilege by default
+      Policies:
+        - AWSLambdaBasicExecutionRole
+
+  TestEndLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/test-handlers/test-end.testHandler
+      Description: The test begin deployment handler
+      Timeout: 20
+      # change as applicable for each test. This is simply to ensure that each function has least privilege by default
+      Policies:
+        - AWSLambdaBasicExecutionRole
+
+  # see: https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-use-sam.html#eb-separated-template
+
+  StackCreateUpdateSuccessEventsRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Event rule to capture CloudFormation events (that we're interested in)
+      EventPattern:
+        source:
+        - aws.cloudformation
+        resources:
+        - !Ref StackToTestARN
+        detail-type:
+        - CloudFormation Resource Status Change
+        detail:
+          status-details:
+            status:
+            # supported events: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/stacks-event-bridge.html
+            # aim is to trigger the above test-start Lambda function on either successful creation or update of the stack ARN passed in
+            - CREATE-COMPLETE
+            - UPDATE-COMPLETE
+            # could use these two events as well, as these specify rollback completion, so a test at this point would be useful too
+            # - ROLLBACK-COMPLETE
+            # - UPDATE_ROLLBACK_COMPLETE
+      Name: cfn-stack-create-or-update-complete
+      State: ENABLED
+      Targets: 
+        - 
+          Arn: 
+            Fn::GetAtt: 
+              - "TestBeginLambdaFunction"
+              - "Arn"
+          Id: "TestBeginTarget1"
+
+  PermissionForEventsToInvokeLambda: 
+    Type: AWS::Lambda::Permission
+    Properties: 
+      FunctionName: 
+        Ref: "TestBeginLambdaFunction"
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn: 
+        Fn::GetAtt: 
+          - "StackCreateUpdateSuccessEventsRule"
+          - "Arn"
+
+Outputs:
+  TestBeginFn:
+    Description: "Logical ID of lambda test begin function"
+    Value: !Ref TestBeginLambdaFunction
+  TestBeginArn:
+    Description: "ARN of lambda test begin function"
+    Value: !GetAtt TestBeginLambdaFunction.Arn
+  TestEndFn:
+    Description: "Logical ID of lambda test end function"
+    Value: !Ref TestEndLambdaFunction
+  TestEndArn:
+    Description: "ARN of lambda test end function"
+    Value: !GetAtt TestEndLambdaFunction.Arn
+
+
+
